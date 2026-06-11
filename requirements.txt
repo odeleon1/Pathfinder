@@ -1,0 +1,28 @@
+# Pathfinder — project .venv dependencies
+#
+# Install into .venv/ (created by scripts/phase1b_setup.sh):
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# The .venv is created with --system-site-packages, so packages already
+# available system-wide are NOT listed here:
+#   tensorrt 10.16.2.10  — JetPack system install
+#   numpy    1.26.4      — system Python
+#   cv2      4.6.0       — system Python (python3-opencv)
+#   rclpy / sensor_msgs / cv_bridge — ROS 2 (/opt/ros/jazzy/)
+
+
+# ── Runtime: TensorRT inference (TensorRTBackend) ─────────────────────────────
+# Provides `from cuda.bindings import runtime as cudart`.
+# Version matches CUDA 13.x on JetPack 7.2.
+cuda-python==13.3.1
+
+
+# ── Export: metric model → ONNX → TRT (phase1b_export_metric.py) ─────────────
+# torch 2.12.0 is available on standard PyPI for aarch64 — no special index.
+torch==2.12.0
+onnx==1.21.0
+onnxscript==0.7.0
+onnxsim==0.6.5
+huggingface_hub>=0.23.2
+transformers>=4.39.0   # loads metric model via from_pretrained for ONNX export

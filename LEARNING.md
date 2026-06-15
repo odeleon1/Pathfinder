@@ -571,6 +571,44 @@ For example, to project a depth pixel into world coordinates, you need to know:
 Each node publishes its piece of this chain. The TF library lets any node look up
 any combination at any timestamp.
 
+**The frame_id chain — how naming must be consistent**
+
+Every ROS 2 sensor message has a `header.frame_id` field: a string naming which
+coordinate frame the data is expressed in. For the camera pipeline:
+
+- `/image_raw` and `/camera_info` both have `header.frame_id = <camera frame name>`
+- `/depth/image` and `/depth/camera_info` inherit the same name
+
+rtabmap_ros's `rgbd_odometry` node has a `frame_id` parameter that means the
+**robot's base frame** — the body frame that moves through the world. It looks up TF:
+
+```
+TF lookup: base_frame → camera_frame
+```
+
+This tells it where the camera is mounted relative to the body. For a handheld
+device where the camera *is* the robot, these should be the same frame, and the
+lookup is identity.
+
+**The gotcha that bit Phase 1b:**
+
+Our launch file defaulted `frame_id` to `camera_optical_frame`. But v4l2_camera
+publishes camera_info with the `frame_id` taken from the **`camera_name` field in
+the calibration YAML** — not from the `camera_frame_id` ROS parameter as you might
+expect. Our YAML had `camera_name: camera`. So:
+
+- rtabmap thought the base frame was `camera_optical_frame`
+- camera_info said the camera frame was `camera`
+- rtabmap tried: `lookupTransform("camera_optical_frame", "camera")` → failed
+- Error: `getting transform camera_optical_frame -> camera: target_frame does not exist`
+
+Fix: set `frame_id: camera` in the launch (to match YAML camera_name), so base
+frame == camera frame == `camera`. Identity lookup, no TF publisher needed.
+
+The broader principle: when this error appears, the fix is always to trace the
+`frame_id` from the YAML → camera_info header → rtabmap `frame_id` param and
+make sure they all agree.
+
 ### Launch files
 
 Running 5 nodes manually with the right parameters each time is error-prone.
@@ -725,6 +763,32 @@ versioning for GPU instruction sets. CC 8.7 is Ampere-generation, which supports
 
 TRT engines are compiled for a specific CC. A `.plan` file built on the Orin (CC 8.7)
 will not run on a different GPU — even another Jetson with a different CC.
+
+### Video backends: GStreamer vs V4L2
+
+On a standard Linux desktop, `cv2.VideoCapture(0)` talks directly to the kernel's
+V4L2 (Video4Linux2) camera driver. You can also explicitly force it with
+`cv2.VideoCapture(0, cv2.CAP_V4L2)`.
+
+On JetPack, OpenCV is compiled with GStreamer support and defaults to it. **GStreamer**
+is a multimedia pipeline framework — it handles format negotiation, decoding, and
+color conversion between camera hardware and your application. NVIDIA builds its camera
+drivers to expose themselves through GStreamer.
+
+When you force `CAP_V4L2` on JetPack, OpenCV bypasses GStreamer and talks raw to the
+kernel driver. The BRIO outputs `yuv422_yuy2` format natively. Without GStreamer's
+conversion pipeline, you get unprocessed frames — OpenCV receives them but can't
+display them as RGB, which shows up as a black image.
+
+The calibration script explicitly does NOT pass `CAP_V4L2`:
+```python
+cap = cv2.VideoCapture(args.device)       # GStreamer path — correct on JetPack
+# NOT: cv2.VideoCapture(args.device, cv2.CAP_V4L2)  # bypasses GStreamer → black frames
+```
+
+You'll also see this in v4l2_camera's output: `"Image encoding not same as requested
+output, performing slow conversion: yuv422_yuy2 => rgb8"`. That's GStreamer doing the
+conversion in the ROS node. It's doing exactly what it should.
 
 ### JetPack and the software stack
 

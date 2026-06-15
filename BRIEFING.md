@@ -3,7 +3,7 @@
 **Status:** see Current Status in CLAUDE.md (single source of truth for status)
 **Owner:** Orlando
 **Approach:** monocular depth estimation → dense reconstruction
-**Last updated:** 2026-06-11 — Phase 1a complete; Phase 1b next (Jetson migration). Node graph in ARCHITECTURE.md
+**Last updated:** 2026-06-15 — Phase 1b complete; Phase 2 next (SPOT integration). Node graph in ARCHITECTURE.md
 
 ---
 
@@ -122,18 +122,18 @@ Differences from Jetson build, by design:
 
 **Exit criteria met:** recognizable, coherent reconstruction in rtabmap_viz. Pipeline logic proven.
 
-### Phase 1b — Migrate to Jetson (TensorRT, live camera)
-Move the *same* ROS 2 packages to the Jetson. Flip the depth backend param to
-`tensorrt` (using the Phase 0 engine, re-exported from the metric `.pth`). Swap the
-recorded source for a **live USB webcam** via a UVC node — any webcam works, since
-the camera node doesn't care which UVC device it is; the Arducam IMX462 drops in the
-same way once it's in hand. Because the environments match (both native Jazzy) and
-the node interfaces are identical, this is migration + the two swaps, not a rewrite.
-Any new failure here is environment, not pipeline — which is the whole reason 1a came first.
+### Phase 1b — Migrate to Jetson (TensorRT, live camera) — ✅ DONE
 
-**Exit:** handheld walk with a live webcam on the Jetson produces a coherent,
-saveable reconstruction. Decide nvblox vs RTAB-Map for later phases.
-Node graph + topics (identical across 1a/1b): see **ARCHITECTURE.md**.
+**Result (PASSED, 2026-06-15):** Full pipeline running on Jetson Orin Nano. Logitech BRIO (848×480) → v4l2_camera → depth_anything_node (TRT FP16, **70.3 fps, 14.16 ms**) → rgbd_odometry → rtabmap → rtabmap_viz. Handheld walk produced a growing colored point cloud. Exit criteria met.
+
+**Durable gotchas:**
+- HuggingFace metric model is safetensors-only on Hub; use `from_pretrained()` via transformers, not raw `.pth` download.
+- ONNX static shapes baked in → `trtexec` must NOT use `--minShapes/--optShapes/--maxShapes`.
+- OpenCV on JetPack uses GStreamer backend; `CAP_V4L2` gives black frames.
+- ros-jazzy-camera-calibration crashes (v4l2_camera has no `set_camera_info` service). Standalone OpenCV calibration script used instead.
+- YAML camera_info must use inline sequences (`[v1, v2, ...]`) — yaml-cpp rejects block sequences.
+- v4l2_camera publishes `frame_id` from YAML `camera_name`. All rtabmap nodes must use the same frame name (`camera`). Mismatch = TF lookup failure.
+- USB-C on Jetson Orin Nano is device-mode only — cameras go into USB-A.
 
 ### Phase 2 — SPOT integration (no mapping yet)
 Mount Jetson + camera. Bring up spot_ros2. Get SPOT body odometry + state into ROS 2. Build the TF tree (SPOT body → camera). Stand up the scale-recovery step that ties odometry to the depth output.

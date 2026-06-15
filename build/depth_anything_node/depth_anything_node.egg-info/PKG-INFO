@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: depth-anything-node
+Version: 0.1.0
+Summary: Depth Anything V2 metric depth inference node for Pathfinder
+Maintainer: Orlando De Leon
+Maintainer-email: orlando.deleon@txdot.gov
+License: Apache-2.0

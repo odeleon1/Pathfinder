@@ -99,38 +99,40 @@ Everything for Phase 1b–5 lives under the project root. This is also the colco
 
 ## Current status
 
-**Active phase: Phase 1b — Jetson migration (TensorRT backend + live webcam).**
+**Active phase: Phase 2 — SPOT integration.**
 
-Phase 1a complete on laptop. Code now in this project directory. No camera plugged in yet.
+Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_viz.
 
-- [x] **Step 1 — ROS 2 + .venv:**
-  `bash scripts/phase1b_setup.sh`
-  Installs ROS 2 Jazzy, rtabmap_ros, v4l2_camera, camera_calibration; creates `.venv/`; installs `requirements.txt`; updates `.bashrc`.
-  Gate: open new terminal → `ros2 pkg list | grep rtabmap` and `python3 -c "from cuda.bindings import runtime; print('OK')"`
+### Phase 1b — ✅ DONE (Jetson TRT + live webcam)
 
-- [x] **Step 2 — Metric TRT engine:**
-  `cd ~/Depth-Anything-V2 && ~/Documents/Projects/Pathfinder/.venv/bin/python ~/Documents/Projects/Pathfinder/scripts/phase1b_export_metric.py`
-  Loads metric DAv2-Small via transformers `from_pretrained` (HF repo: `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf`), exports ONNX (opset 18, external data: 1.8MB graph + 95MB .data), builds TRT FP16 engine.
-  Result: **70.3 fps, 14.16 ms GPU latency** on Orin Nano. Engine: `~/Depth-Anything-V2/depth_anything_v2_metric_vits_364_fp16.plan`
-  Gotchas:
-  - Use `hf auth login` (not deprecated `huggingface-cli login`) to authenticate.
-  - ONNX has static shapes baked in → drop `--minShapes/--optShapes/--maxShapes` from trtexec (causes "Static model does not take explicit shapes" error).
-  - `metric_depth/` dir in DAv2 repo is irrelevant now — model loads via transformers, not local dpt.py.
+**Result (2026-06-15):** Full pipeline running on Jetson Orin Nano. Logitech BRIO (848×480, /dev/video0) → v4l2_camera → depth_anything_node (TRT FP16, 70.3 fps) → rgbd_odometry → rtabmap → rtabmap_viz. Handheld walk produced a growing colored point cloud. Exit criteria met.
 
-- [ ] **Step 3 — Build ROS package:**
-  `cd ~/Documents/Projects/Pathfinder && colcon build && source install/setup.bash`
-  Gate: `ros2 pkg list | grep depth_anything_node`
+**Steps completed:**
+- [x] Step 1 — ROS 2 Jazzy + .venv (`bash scripts/phase1b_setup.sh`)
+- [x] Step 2 — Metric TRT engine (70.3 fps, 14.16 ms on Orin Nano). Engine: `~/Depth-Anything-V2/depth_anything_v2_metric_vits_364_fp16.plan`
+- [x] Step 3 — colcon build + source install/setup.bash
+- [x] Step 4 — Webcam calibration via `scripts/phase1b_calibrate.py`. YAML at `~/.ros/camera_info/camera.yaml`. K: fx=532.2, fy=493.7, cx=419.3, cy=229.7 at 848×480.
+- [x] Step 5 — Full pipeline live. Launch command:
+  ```
+  cd ~/Documents/Projects/Pathfinder && colcon build && source install/setup.bash
+  ros2 launch depth_anything_node pipeline.launch.py \
+    camera_info_url:=file:///home/odeleon1/.ros/camera_info/camera.yaml
+  ```
 
-- [ ] **Step 4 — Plug in webcam + calibrate:**
-  `ls /dev/video*` confirms device. Run v4l2_camera + `ros2 run camera_calibration cameracalibrator --size 8x6 --square 0.025 image:=/image_raw camera:=/camera`. Move checkerboard → save YAML.
-  Gate: YAML saved, K matrix non-zero.
+**Durable gotchas (Phase 1b):**
+- Use `hf auth login` (not deprecated `huggingface-cli login`) for HuggingFace auth.
+- ONNX has static shapes baked in → drop `--minShapes/--optShapes/--maxShapes` from trtexec.
+- `source ~/.bashrc` doesn't apply in VS Code terminals (interactive shell guard). Fix: `source /opt/ros/jazzy/setup.bash` or add to `~/.profile`.
+- USB-C port on Jetson is device-mode only — plug camera into USB-A.
+- OpenCV on Jetson uses GStreamer backend; forcing CAP_V4L2 gives black frames.
+- BRIO: device 0=RGB 848×480, device 2=IR 340×340.
+- ros-jazzy-camera-calibration crashes (v4l2_camera exposes no set_camera_info service). Fix: `scripts/phase1b_calibrate.py` (standalone OpenCV).
+- YAML camera_info must use inline sequences `[v1, v2, ...]` not block `- v1` — yaml-cpp requirement.
+- v4l2_camera publishes camera_info with `frame_id` from the YAML `camera_name` field. The launch `frame_id` param for all rtabmap nodes must match — set both to `camera`. Mismatch causes TF lookup failure: `getting transform camera_optical_frame -> camera`.
+- `[logitech brio] does not match camera name in file camera.yaml` warning is non-fatal — camera still uses the calibration.
+- Control 10092545 `Permission denied` warning from v4l2_camera is non-fatal (proprietary BRIO UVC extension).
 
-- [ ] **Step 5 — Full pipeline live:**
-  `ros2 launch depth_anything_node pipeline.launch.py camera_info_url:=file:///path/to/cal.yaml`
-  Walk around the room.
-  Gate: growing colored point cloud in rtabmap_viz.
-
-**Exit criteria:** handheld walk with a live USB webcam on the Jetson produces a coherent, saveable reconstruction in rtabmap_viz.
+**Exit criteria:** handheld walk with a live USB webcam on the Jetson produces a coherent, saveable reconstruction in rtabmap_viz. ✅ MET
 
 ---
 

@@ -1,0 +1,2 @@
+[console_scripts]
+depth_anything_node = depth_anything_node.node:main

@@ -31,6 +31,24 @@ The phased project plan and rationale live in [BRIEFING.md](BRIEFING.md).
 
 ---
 
+## In action
+
+`rtabmap_viz` running live during a Phase 1b handheld walk on the Jetson — Logitech BRIO
+webcam → Depth Anything V2 (TensorRT FP16) → RTAB-Map. Left panels show loop-closure
+detection (top) and the live depth colormap from the odometry node (bottom); the right
+panel is the dense colored 3D point cloud growing in real time.
+
+<p align="center">
+  <img src="documentation/images/Screenshot%20from%202026-06-15%2014-21-06.png" width="49%">
+  <img src="documentation/images/Screenshot%20from%202026-06-15%2014-43-36.png" width="49%">
+</p>
+
+The second frame is later in the same walk: the cyan graph in the 3D Map panel is a
+detected loop closure (the robot recognized a revisited area), which RTAB-Map uses to
+correct accumulated drift as the map keeps growing.
+
+---
+
 ## Hardware
 
 | Component | Part | Notes |

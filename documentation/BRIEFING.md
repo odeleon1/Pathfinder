@@ -1,9 +1,9 @@
 # Pathfinder — Project Briefing
 
-**Status:** see Current Status in CLAUDE.md (single source of truth for status)
+**Status:** see Current Status in [CLAUDE.md](CLAUDE.md) (single source of truth for status)
 **Owner:** Orlando
 **Approach:** monocular depth estimation → dense reconstruction
-**Last updated:** 2026-06-15 — Phase 1b complete; Phase 2 next (SPOT integration). Node graph in ARCHITECTURE.md
+**Last updated:** 2026-06-15 — Phase 1b complete; Phase 2 next (SPOT integration). Node graph in [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
@@ -186,7 +186,7 @@ The viewer matures alongside the back-end rather than waiting for a dedicated ph
 ## Next actions
 
 Phase 0 is complete (see its result above). The **active phase and current next
-actions live in CLAUDE.md → Current Status** (single source of truth) — one place
+actions live in [CLAUDE.md](CLAUDE.md) → Current Status** (single source of truth) — one place
 to look, nothing to drift here.
 
 Non-blocking carryovers / future tasks:

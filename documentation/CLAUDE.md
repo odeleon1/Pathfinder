@@ -1,8 +1,8 @@
 # CLAUDE.md — Pathfinder
 
-This file is read automatically by Claude Code at the start of each session. It carries how to work on this project and the hard environment rules. The full project plan (phases, architecture, risks) lives in **BRIEFING.md**, and the current-phase node graph + topic contract live in **ARCHITECTURE.md**, both at the repo root — read them before doing project work.
+This file is read automatically by Claude Code at the start of each session. It carries how to work on this project and the hard environment rules. The full project plan (phases, architecture, risks) lives in **[BRIEFING.md](BRIEFING.md)**, and the current-phase node graph + topic contract live in **[ARCHITECTURE.md](ARCHITECTURE.md)**, both alongside this file — read them before doing project work.
 
-**Scope at a glance:** Pathfinder has a **back-end** (on-Jetson pipeline: mono camera → depth network → scale recovery via SPOT odometry → dense map) and a **front-end** (viewer that shows the 3D map being built, colored with the camera's RGB). See BRIEFING.md for detail.
+**Scope at a glance:** Pathfinder has a **back-end** (on-Jetson pipeline: mono camera → depth network → scale recovery via SPOT odometry → dense map) and a **front-end** (viewer that shows the 3D map being built, colored with the camera's RGB). See [BRIEFING.md](BRIEFING.md) for detail.
 
 ---
 
@@ -52,7 +52,7 @@ Everything for Phase 1b–5 lives under the project root. This is also the colco
 ```
 ~/Documents/Projects/Pathfinder/         ← project root + colcon workspace
 │
-├── CLAUDE.md / BRIEFING.md / ARCHITECTURE.md
+├── documentation/                       ← CLAUDE.md / BRIEFING.md / ARCHITECTURE.md / LEARNING.md
 │
 ├── scripts/                             ← phase*_ setup & runbook scripts (not shipped code)
 │   ├── phase1b_setup.sh                 # ROS 2 Jazzy install + venv creation
@@ -184,19 +184,19 @@ Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_vi
 
 Three files, each with a job. Keep all three current — they drift if untended. Trigger: "something changed that the next session needs to know."
 
-**CLAUDE.md (this file) — volatile, loaded every session.**
+**[CLAUDE.md](CLAUDE.md) (this file) — volatile, loaded every session.**
 - Update **Current Status** almost every time a step completes — highest-value, most-frequent update.
 - Add new **gotchas, decisions, and rules** as they're found.
 - Keep it tight: durable facts and rules, not running commentary.
 
-**BRIEFING.md — the durable plan + permanent record.**
+**[BRIEFING.md](BRIEFING.md) — the durable plan + permanent record.**
 - **When a phase completes:** mark it DONE and record the outcome — result, numbers, durable gotchas.
 - **When the plan changes:** edit the relevant section so the plan reflects reality.
 
-**ARCHITECTURE.md — the current node graph + topic contract.**
+**[ARCHITECTURE.md](ARCHITECTURE.md) — the current node graph + topic contract.**
 - Update when the graph or interfaces change (e.g. Phase 2 swapping the odometry source).
 
-**LEARNING.md — growing learning guide for the whole project.**
+**[LEARNING.md](LEARNING.md) — growing learning guide for the whole project.**
 - Update after any step that introduced a non-obvious concept, a surprising gotcha, or new hardware/software that needed explanation.
 - Add new sections when new domains enter the project (e.g. Phase 2: SPOT kinematics, odometry fusion).
 - Keep explanations first-principles and teacher-quality — explain the *why*, not just the *what*.

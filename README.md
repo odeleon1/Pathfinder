@@ -9,7 +9,7 @@ The interesting (and risky) part: a single camera physically *cannot* measure de
 Pathfinder infers it with a neural network ([Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2))
 running on the edge, then recovers real-world scale from the robot's odometry.
 
-> **New to the concepts?** [LEARNING.md](LEARNING.md) explains everything from first
+> **New to the concepts?** [LEARNING.md](documentation/LEARNING.md) explains everything from first
 > principles — cameras, neural nets, vision transformers, TensorRT, ROS 2, and SLAM.
 
 ---
@@ -26,8 +26,26 @@ Every stage is a ROS 2 node connected by topics. The depth network outputs metri
 (actual metres), which RTAB-Map fuses with pose estimates to assemble a globally
 consistent point cloud colored with the camera's RGB.
 
-The full node graph and topic contract live in [ARCHITECTURE.md](ARCHITECTURE.md).
-The phased project plan and rationale live in [BRIEFING.md](BRIEFING.md).
+The full node graph and topic contract live in [ARCHITECTURE.md](documentation/ARCHITECTURE.md).
+The phased project plan and rationale live in [BRIEFING.md](documentation/BRIEFING.md).
+
+---
+
+## In action
+
+`rtabmap_viz` running live during a Phase 1b handheld walk on the Jetson — Logitech BRIO
+webcam → Depth Anything V2 (TensorRT FP16) → RTAB-Map. Left panels show loop-closure
+detection (top) and the live depth colormap from the odometry node (bottom); the right
+panel is the dense colored 3D point cloud growing in real time.
+
+<p align="center">
+  <img src="documentation/images/Screenshot%20from%202026-06-15%2014-21-06.png" width="49%">
+  <img src="documentation/images/Screenshot%20from%202026-06-15%2014-43-36.png" width="49%">
+</p>
+
+The second frame is later in the same walk: the cyan graph in the 3D Map panel is a
+detected loop closure (the robot recognized a revisited area), which RTAB-Map uses to
+correct accumulated drift as the map keeps growing.
 
 ---
 
@@ -39,7 +57,7 @@ The phased project plan and rationale live in [BRIEFING.md](BRIEFING.md).
 | Camera   | Any **UVC USB webcam** | Currently a Logitech BRIO; target is the Arducam IMX462 (mono, night-vision). The camera node is config, not code — any UVC device drops in. |
 | Robot    | Boston Dynamics SPOT | Phase 2+ — not required for the standalone mapping pipeline |
 
-**Hard constraints (see [CLAUDE.md](CLAUDE.md) for the full list):**
+**Hard constraints (see [CLAUDE.md](documentation/CLAUDE.md) for the full list):**
 - 8GB shared RAM → depth model is the **Small** variant only.
 - **FP16 is mandatory** for usable framerate (unlocks the GPU's Tensor Cores).
 - **TensorRT engines must be built on the Jetson** — they're specific to the exact GPU + TRT version.
@@ -53,11 +71,14 @@ The phased project plan and rationale live in [BRIEFING.md](BRIEFING.md).
 Pathfinder/                              ← project root + colcon workspace
 │
 ├── README.md                            ← this file
-├── CLAUDE.md                            ← working notes, status, hard rules, gotchas
-├── BRIEFING.md                          ← durable plan: phases, architecture, risks
-├── ARCHITECTURE.md                      ← current node graph + topic contract
-├── LEARNING.md                          ← first-principles guide to every concept used
 ├── requirements.txt                     ← project Python deps (installed into .venv)
+│
+├── documentation/
+│   ├── CLAUDE.md                        ← working notes, status, hard rules, gotchas
+│   ├── BRIEFING.md                      ← durable plan: phases, architecture, risks
+│   ├── ARCHITECTURE.md                  ← current node graph + topic contract
+│   ├── LEARNING.md                      ← first-principles guide to every concept used
+│   └── images/                          ← screenshots referenced from README.md
 │
 ├── scripts/                             ← one-off setup / runbook scripts (not shipped code)
 │   ├── phase1b_setup.sh                 # installs ROS 2 Jazzy, creates .venv, wires .bashrc
@@ -177,7 +198,7 @@ cloud appears in the viewer.
 | **4**  | Quality + optimization | Planned |
 | **5**  | Application layer (change detection / nav / inspection) | Planned |
 
-Current status is tracked authoritatively in [CLAUDE.md](CLAUDE.md).
+Current status is tracked authoritatively in [CLAUDE.md](documentation/CLAUDE.md).
 
 ---
 
@@ -194,17 +215,17 @@ Current status is tracked authoritatively in [CLAUDE.md](CLAUDE.md).
 | `Failed getting value for control ...: Permission denied` | Non-fatal — a proprietary UVC extension control. The camera streams fine. |
 | Map silently never builds | RGB and depth timestamps not matching. `approx_sync: True` is set; if still failing, the depth node may be too slow for the frame rate. |
 
-More detail and the reasoning behind each fix is in [LEARNING.md](LEARNING.md) and
-the gotchas sections of [CLAUDE.md](CLAUDE.md).
+More detail and the reasoning behind each fix is in [LEARNING.md](documentation/LEARNING.md) and
+the gotchas sections of [CLAUDE.md](documentation/CLAUDE.md).
 
 ---
 
 ## Documentation map
 
-- **[CLAUDE.md](CLAUDE.md)** — how to work on the project, environment, hard rules, current status, gotchas.
-- **[BRIEFING.md](BRIEFING.md)** — the durable plan: what Pathfinder is, the architecture, the phases, the risks.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the current ROS 2 node graph and topic contract.
-- **[LEARNING.md](LEARNING.md)** — a teach-yourself guide to every concept the project touches.
+- **[CLAUDE.md](documentation/CLAUDE.md)** — how to work on the project, environment, hard rules, current status, gotchas.
+- **[BRIEFING.md](documentation/BRIEFING.md)** — the durable plan: what Pathfinder is, the architecture, the phases, the risks.
+- **[ARCHITECTURE.md](documentation/ARCHITECTURE.md)** — the current ROS 2 node graph and topic contract.
+- **[LEARNING.md](documentation/LEARNING.md)** — a teach-yourself guide to every concept the project touches.
 
 ## License
 

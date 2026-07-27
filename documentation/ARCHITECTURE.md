@@ -58,11 +58,24 @@ processes ran at 7–10 Hz. The cost was serializing 1.2–1.6 MB image messages
 loopback network stack once per subscriber. Composing the three SLAM nodes and
 collapsing rgb+depth+info into one `RGBDImage` took it to **20.9 Hz**.
 
-**Why the viewer is the odd one out.** `rtabmap_viz` is a GUI and cannot be composed,
-so it has to receive messages over the wire. The combined `/rgbd_image` is ~2 MB and
-will not survive that trip on default socket buffers, so the viewer subscribes to the
-smaller raw topics instead. It is opt-in (`viz:=true`) because it also renders 3D on
-the same GPU the depth network is using.
+**Why the viewer is the odd one out.** `rtabmap_viz` is a GUI and cannot be composed, so
+it has to receive messages over the wire — and on this box the image topics do not
+survive that trip once they already have subscribers (see *fan-out*, below). The
+supported mode is **map-only**: the viewer takes `/mapData` and `/info` and displays the
+3D cloud and graph, with no camera or depth preview panels. The launch file's `viz:=true`
+is left in place but does not work.
+
+**Fan-out limit.** A large topic serves its *first* subscriber at full rate and starves
+every additional one — the constraint is subscriber count, not message size. Measured
+2026-07-27: a third subscriber to `/image_raw` (1.22 MB) got 0.20 Hz, while the same data
+on a dedicated single-subscriber topic ran at 24 Hz. Compression sidesteps it entirely
+(`/image_raw/compressed` is 107 KB and delivers 24.4 Hz). This matters when adding any
+new consumer to an existing image topic.
+
+**Containment.** Topics published inside the container mostly do not escape it. `/tf`
+does (17.7 Hz externally); `/odom` does not (0.13 Hz), despite being a few hundred bytes.
+Nothing outside needs `/odom` today. Phase 2 changes that — SPOT's odometry crosses this
+same boundary.
 
 ## Why each piece
 

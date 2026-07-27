@@ -167,23 +167,31 @@ Saves intrinsics to `~/.ros/camera_info/camera.yaml`.
 
 Run the mapper and the viewer in **two terminals**.
 
-First, clear the previous map — rtabmap reloads `~/.ros/rtabmap.db` on every launch, and
-a stale one costs about 3× throughput:
+First, check which device the camera is on — the numbering is not stable across USB
+ports, and the lowest-numbered BRIO node is the RGB stream:
+
+```bash
+ls /dev/video*
+```
+
+Then clear the previous map. rtabmap reloads `~/.ros/rtabmap.db` on every launch, and a
+stale one costs about 3× throughput:
 
 ```bash
 rm ~/.ros/rtabmap.db
 ```
 
-**Terminal 1 — the pipeline:**
+**Terminal 1 — build the map** (headless, ~27 Hz):
 
 ```bash
 cd ~/Documents/Projects/Pathfinder
 source /opt/ros/jazzy/setup.bash && source install/setup.bash
 ros2 launch depth_anything_node pipeline.launch.py \
+  camera_device:=/dev/video1 \
   camera_info_url:=file:///home/$USER/.ros/camera_info/camera.yaml
 ```
 
-**Terminal 2 — the viewer:**
+**Terminal 2 — see the map:**
 
 ```bash
 cd ~/Documents/Projects/Pathfinder
@@ -194,11 +202,14 @@ ros2 run rtabmap_viz rtabmap_viz --ros-args -r __node:=viewer \
 ```
 
 Walk the camera slowly around the room — a growing colored point cloud appears in the
-viewer. Runs at ~27 Hz on a fresh map.
+viewer.
 
-> Don't use the launch file's `viz:=true`. The viewer starves when it also subscribes to
-> the image topics — see [CLAUDE.md](documentation/CLAUDE.md). The two-terminal split above
-> is the verified path.
+Terminal 1 alone is a complete mapper; the viewer is only for watching. To see the
+camera feed too, run `rqt_image_view` on `/image_raw/compressed` in a third terminal.
+
+> The viewer shows the 3D map and graph, not the camera/depth preview panels — those
+> don't work on this box. Don't use the launch file's `viz:=true` either. Both are
+> explained in [CLAUDE.md](documentation/CLAUDE.md).
 
 **Launch arguments** (all optional, with sensible defaults):
 

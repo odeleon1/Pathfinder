@@ -742,10 +742,53 @@ sudo sysctl --system
 
 There's a nastier lesson buried here. This bug was *latent* for all of Phase 1b — the
 viewer worked fine. It only appeared once the pipeline got faster, because at 7–10 Hz
-the traffic fit through the undersized buffers and at 20 Hz it didn't. **Making a system
+the traffic fit and at 20 Hz it didn't. **Making a system
 faster can expose bugs that were always there.** When something breaks right after an
 optimization, "the optimization broke it" and "the optimization revealed it" are very
 different diagnoses, and they lead to opposite fixes.
+
+### Fan-out — the part that isn't about size
+
+Raising the buffers was necessary but not sufficient, and the reason is worth
+internalizing: **the limit is how many subscribers a topic has, not how big the message
+is.**
+
+A large topic serves its *first* subscriber at full rate and starves the rest. Measured
+on `/image_raw` (1.22 MB/frame) with two subscribers already attached, a third got
+0.20 Hz. The identical data on a topic with one subscriber ran at 24 Hz. Nothing about
+the bytes changed — only how many readers were competing for them.
+
+Two fixes follow, attacking different halves of the problem:
+
+```
+compress it                        give it its own topic
+1220 KB -> 107 KB                  /image_raw -> /viz/image_raw
+0.20 Hz -> 24.40 Hz                0.20 Hz -> 24.13 Hz
+```
+
+`image_transport` does both without touching your nodes. Publishers automatically offer
+`<topic>/compressed` once the plugin is installed, and `image_transport republish` will
+decode a compressed stream onto a fresh topic for a single consumer.
+
+The general principle: **when a subscriber starves, count the other subscribers before
+you look at the message size.** Size determines when the problem shows up; fan-out
+determines who it hits.
+
+### Not everything escapes a container
+
+Composition has a cost the tutorials don't mention: topics published from inside an
+intra-process container may not reach subscribers outside it. Measured on this pipeline:
+
+```
+/tf     17.7 Hz   fine
+/odom    0.13 Hz  starved   (a few hundred bytes!)
+```
+
+`/odom` is tiny, so this is not the fan-out effect above — it is the intra-process
+publisher itself. The practical consequence: **decide early which topics need to leave
+the container**, because composition is not transparent to outside consumers. Here it
+costs nothing (nothing outside needs `/odom`), but it is exactly the kind of thing that
+bites when a new consumer shows up later.
 
 ### Message encodings — depth as 16UC1 vs 32FC1
 

@@ -138,19 +138,39 @@ Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_vi
 
 ### Pipeline throughput rework — 2026-07-27
 
-**7–10 Hz → 20.9 Hz.** Launch file restructured; no change to the depth model or engine.
+**7–10 Hz → 27.7 Hz** (fresh database, headless, clocks pinned). Launch file restructured; no change to the depth model or engine. Measured 20.9 Hz before `sudo jetson_clocks` and the socket-buffer raise; both helped.
 
 **The finding:** the bottleneck was never compute. Measured in isolation, the camera does 27 Hz and the depth node's own compute ceiling is 32 fps — but assembled, the pipeline ran at 7–10 Hz. The cost was moving 1.2–1.6 MB image messages between five separate processes, over a socket buffer far too small for them.
 
 **What changed:**
 - `rgbd_odometry` + `rtabmap` + a new `rtabmap_sync::RGBDSync` now run in one `component_container_mt` with `use_intra_process_comms`. RGBDSync collapses rgb + depth + camera_info into a single `RGBDImage` topic, and intra-process makes those hops pointer passing — never serialized.
-- `rtabmap_viz` is now opt-in (`viz:=true`, default false).
+- `rtabmap_viz` is now opt-in (`viz:=true`, default false), and subscribes to the **raw** rgb + depth topics rather than `/rgbd_image` — the combined ~2 MB message does not survive the trip out of the container.
 - Depth publishes `16UC1` millimetres instead of `32FC1` metres — half the bytes, the ROS-standard depth encoding, 1 mm quantization (far below the network's own error). Switch back with `depth_encoding:=32FC1`.
 
 **Launch command is unchanged.** Add `viz:=true` to get the viewer.
 
 **Durable gotchas (throughput):**
-- **`net.core.rmem_max` is 212992 (208 KB) by default and is too small for ROS 2 image traffic.** Measured: an external subscriber got 2 `/rgbd_image` (~2 MB) messages in 12 s while in-container subscribers saw ~20 Hz of the same topic. `/depth/image` (815 KB) crossed fine. Fix before using `viz:=true`: `sudo sysctl -w net.core.rmem_max=16777216`, persist via `/etc/sysctl.d/60-ros2.conf`. Mapping itself is unaffected — odometry and rtabmap are intra-process.
+- **All four `net.core.*mem_*` values must be raised, not just `rmem_max`.** Ubuntu defaults them to 212992 (208 KB), far too small for ROS 2 image traffic — a single 848×480 rgb8 frame is 1.22 MB. Raising `rmem_max` alone changes *nothing*: FastDDS sizes its sockets from `rmem_default`, and the send side (`wmem_max`/`wmem_default`) has to be raised too or the publisher cannot push a large message out in the first place. This cost an hour of misdiagnosis — the symptom (viewer starves, `Did not receive data since 5 seconds!`) looks identical whether one knob or all four are wrong.
+  ```bash
+  sudo tee /etc/sysctl.d/60-ros2.conf >/dev/null <<'EOF'
+  net.core.rmem_max=16777216
+  net.core.rmem_default=16777216
+  net.core.wmem_max=16777216
+  net.core.wmem_default=16777216
+  EOF
+  sudo sysctl --system
+  ```
+  Measured with an external subscriber while in-container subscribers saw ~20 Hz of the same topic: `/depth/image` (815 KB) ~20 Hz ok; `/rgbd_image` (~2 MB) **0 msgs / 12 s**. Ruled out along the way, do not re-try: `use_intra_process_comms` (disabled container-wide, still 0) and stale `/dev/shm` FastDDS segments (cleared 38, still 0). Mapping itself is unaffected either way — odometry and rtabmap are composed and never touch the network stack.
+- **rtabmap reloads `~/.ros/rtabmap.db` on every launch — throughput degrades run over run.** It is not a fresh map each time; the database accumulates. After a day of testing it reached **522 MB / WM=797 nodes**, and the pipeline dropped from 27.7 Hz on a clean start to 8.9 Hz. This masquerades as a performance regression from whatever you changed most recently. Before benchmarking, or whenever you want a genuinely new map: `rm ~/.ros/rtabmap.db`. Check what you're loading — rtabmap logs it at startup: `rtabmap: Using database from "..." (520 MB)`.
+- **Measure throughput on a fresh database, headless, with the desktop quiet.** All three matter and each is worth ~2× on this box. A number measured with rtabmap_viz attached and VS Code running is not comparable to one that isn't.
+- **The viewer cannot be fed the image topics on this box.** `rtabmap_viz` does a 4-way approx sync of `/odom`, `/image_raw`, `/depth/image`, `/camera_info`, and two of those do not reach it: `/image_raw` (1.22 MB) delivers full rate to the *first* external subscriber and ~1 Hz to any additional one, and `/odom` is published intra-process from inside the container and barely escapes it. Measured externally: `/camera_info` 28.9 Hz, `/depth/image` 18.9 Hz, `/image_raw` **1.08 Hz**, `/odom` **0.25 Hz**. Raising all four socket buffers to 16 MB did not change this. **Use map-only mode instead** — it needs neither topic and runs clean:
+  ```bash
+  ros2 run rtabmap_viz rtabmap_viz --ros-args -r __node:=viewer \
+    -p frame_id:=camera -p subscribe_depth:=false \
+    -p subscribe_rgbd:=false -p subscribe_odom:=false
+  ```
+  Verified: 0 starvation warnings over 90 s, `/mapData` arriving at ~0.45 Hz (rtabmap publishes map updates at 1 Hz). You lose the live camera/depth preview panels; you keep the 3D point cloud and the graph, which is the part worth watching. Root cause of the large-message fan-out limit is still unidentified — the four socket-buffer knobs, `use_intra_process_comms`, and stale `/dev/shm` segments were all ruled out.
+- **Phase 1b's viewer only worked because the pipeline was slow.** At 7–10 Hz the same topics fit; at 20+ Hz they don't. The speedup exposed this, it isn't a regression in the viewer.
 - **Do not put `v4l2_camera` in the component container.** Loading any component into a process where it is already streaming deadlocks the container forever on `Load Library: librtabmap_sync_plugins.so` — image_transport dlopens its plugins lazily as subscribers appear, racing the container's own dlopen. Happens with `component_container_mt` too. RGBDSync loads into a bare container in 2.5 s.
 - Use `component_container_mt`, never `component_container` — the single-threaded one starves the LoadNode service.
 - `cv2.multiply(depth, 1000.0, dtype=cv2.CV_16U)` is 0.85 ms vs 2.9 ms for the numpy `nan_to_num`/`clip`/`astype` chain, and saturates NaN/negative/overflow to 0 (= "no measurement") instead of 65535 (= a fake confident 65 m reading).

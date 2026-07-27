@@ -633,6 +633,160 @@ this, no frames would ever match (exact equality is impossible with async topics
 The cost: very small temporal misalignment between the RGB and depth. In practice
 invisible.
 
+### What a topic actually costs
+
+The pub/sub picture above ("node A publishes, node B subscribes") hides something that
+turns out to dominate this project's performance: **a topic is not a shared variable.**
+
+When node A publishes an image to node B in a different process, the message is
+*serialized* — flattened into a byte buffer — handed to the operating system, copied
+through the loopback network stack, then *deserialized* back into an object on the
+other side. For a small message (a pose, a number) that cost is irrelevant. For an
+848×480 RGB image it is 1.22 MB of copying, per subscriber, per frame.
+
+That last part is the trap. Costs scale with the number of *subscribers*, not topics.
+Our original Phase 1b graph had five separate processes, and both image topics had
+three or four subscribers each:
+
+```
+/image_raw   (1.22 MB) → depth node, odometry, rtabmap, viewer   = 4.9 MB
+/depth/image (1.63 MB) → odometry, rtabmap, viewer               = 4.9 MB
+                                                        ~9.8 MB per frame
+```
+
+At 10 Hz that is ~98 MB/s of pure serialize-copy-deserialize work, none of which is
+doing anything useful. This is why the pipeline ran at 7–10 Hz even though the camera
+could do 27 Hz and the depth network could do 32 fps. **The bottleneck was not compute.
+It was talking.**
+
+The lesson generalizes: when a ROS 2 pipeline is slower than every one of its parts
+measured individually, suspect the plumbing before you optimize the algorithms.
+
+### Composition and intra-process comms
+
+ROS 2's answer is **composition**: instead of running each node as its own process, you
+load several nodes as plugins into one shared process called a *container*.
+
+```
+  Separate processes                One container
+  ┌────┐  serialize   ┌────┐        ┌──────────────────────┐
+  │ A  │ ───────────► │ B  │        │  A ──(pointer)──► B  │
+  └────┘   1.22 MB    └────┘        └──────────────────────┘
+```
+
+With `use_intra_process_comms: true`, a publish to a subscriber in the same process
+becomes **pointer passing**. The message object is never flattened, never copied, never
+touches the network stack. The subscriber gets a reference to the exact same bytes in
+memory. Cost goes from ~1.22 MB of copying to ~8 bytes.
+
+For this to be legal, a node has to be written as a *component* — a class that can be
+loaded dynamically, rather than a program with its own `main()`. Most standard ROS 2
+nodes ship both ways. Our own `depth_anything_node` cannot join, because it is written
+in Python and `rclpy` has no zero-copy intra-process support. That's fine — it means
+exactly two messages per frame still cross a process boundary (RGB out to the depth
+node, depth back), instead of seven.
+
+Two hard-won practicalities:
+
+- **Use `component_container_mt`, not `component_container`.** The single-threaded
+  container runs everything on one executor thread. If one component occupies that
+  thread (a camera capture loop, say), the container can no longer answer the service
+  call that loads the *next* component — and startup hangs forever. The `_mt` variant
+  runs a multi-threaded executor and doesn't have this failure mode.
+- **Composition is not free of new failure modes.** We could not put the camera node in
+  the container at all: `image_transport` loads its plugins lazily via `dlopen` when
+  subscribers appear, which races the container's own `dlopen` for the next component
+  and deadlocks the process permanently. Two libraries loading concurrently is a classic
+  dynamic-linker hazard, and it produces a hang with no error message.
+
+### DDS, and why big messages vanish
+
+Under ROS 2's API sits **DDS** — the actual middleware that moves bytes. ROS 2 doesn't
+implement networking itself; it defines an abstraction (`rmw`) and ships a DDS
+implementation underneath, FastDDS by default. When two processes exchange a message,
+DDS is what carries it, typically over UDP on the loopback interface even when both
+processes are on the same machine.
+
+UDP sockets have a fixed-size kernel buffer. If a 2 MB message arrives and the buffer
+holds 208 KB, the excess is **silently discarded** — UDP has no retransmission and no
+error. The symptom is not a crash or an error log. The symptom is a subscriber that
+just... never receives anything, while the publisher reports everything as fine.
+
+Ubuntu's defaults are sized for ordinary network traffic, not for robots shipping
+uncompressed images:
+
+```bash
+net.core.rmem_default = 212992   # 208 KB — receive, the value DDS actually uses
+net.core.rmem_max     = 212992   # 208 KB — receive, the ceiling a socket may request
+net.core.wmem_default = 212992   # 208 KB — send
+net.core.wmem_max     = 212992   # 208 KB — send
+```
+
+**All four matter, and the `_max` ones are the least important.** This is the part that
+cost us an hour. `rmem_max` is only a *ceiling* — it permits a socket to ask for a
+bigger buffer, it doesn't give it one. FastDDS sizes its sockets from `rmem_default`.
+So raising `rmem_max` alone changes nothing whatsoever, while looking exactly like the
+right fix. And raising both receive values still isn't enough, because the *sending*
+side has its own buffer (`wmem_*`) and a publisher that can't push a 2 MB message out
+fails just as completely as a subscriber that can't take it in.
+
+```bash
+sudo tee /etc/sysctl.d/60-ros2.conf >/dev/null <<'EOF'
+net.core.rmem_max=16777216
+net.core.rmem_default=16777216
+net.core.wmem_max=16777216
+net.core.wmem_default=16777216
+EOF
+sudo sysctl --system
+```
+
+There's a nastier lesson buried here. This bug was *latent* for all of Phase 1b — the
+viewer worked fine. It only appeared once the pipeline got faster, because at 7–10 Hz
+the traffic fit through the undersized buffers and at 20 Hz it didn't. **Making a system
+faster can expose bugs that were always there.** When something breaks right after an
+optimization, "the optimization broke it" and "the optimization revealed it" are very
+different diagnoses, and they lead to opposite fixes.
+
+### Message encodings — depth as 16UC1 vs 32FC1
+
+Depth images have two conventional wire formats in ROS:
+
+| Encoding | Meaning | Bytes/pixel | Range at 848×480 |
+|---|---|---|---|
+| `32FC1` | 32-bit float, **metres** | 4 | 1.63 MB/frame |
+| `16UC1` | 16-bit unsigned int, **millimetres** | 2 | 815 KB/frame |
+
+`32FC1` is the obvious choice — it's the native output of the network and needs no
+conversion. But on a bandwidth-bound pipeline, halving a topic's size is a bigger win
+than saving a millisecond of conversion, so we publish `16UC1`.
+
+The precision question is the one worth thinking through: 16-bit millimetres quantizes
+depth to 1 mm steps and caps at 65.535 m. Is that lossy? Technically yes. Practically
+irrelevant — a monocular depth *network's* error at 5 m is on the order of tens of
+centimetres. Quantizing to 1 mm is like rounding a rough estimate to more decimal places
+than the estimate deserves. The rule: **match your precision to your actual error, not
+to your data type.**
+
+One real subtlety. Converting metres→millimetres means handling NaN, negatives, and
+overflow. The obvious numpy spelling does four passes over 400k pixels:
+
+```python
+mm = np.nan_to_num(depth, nan=0.0) * 1000.0
+out = np.clip(mm, 0, 65535).astype(np.uint16)     # 2.9 ms
+```
+
+OpenCV does it in one SIMD, multithreaded pass:
+
+```python
+out = cv2.multiply(depth, 1000.0, dtype=cv2.CV_16U)   # 0.85 ms
+```
+
+And its saturation behaviour is *better*: NaN, negative and overflowing values all land
+on 0, which every ROS depth consumer already reads as "no measurement". The numpy
+version clips overflow to 65535 — a confident-looking 65 m reading that rtabmap would
+happily insert into the map. **A wrong value is worse than a missing one**, because the
+missing one is handled by existing code paths and the wrong one isn't.
+
 ---
 
 ## 9. SLAM
@@ -874,9 +1028,33 @@ rtabmap_viz
 
 The depth model runs at ~70 fps internally, but the whole pipeline is rate-limited
 by the slowest component. On Phase 1a (laptop), the PyTorch backend was ~1.5 fps
-and the entire pipeline ran at that rate. On the Jetson with TRT, the limiting factor
-will be the camera (USB 2.0 bandwidth caps at ~30 fps for 640×480) and rtabmap's map
-integration, not the depth network.
+and the entire pipeline ran at that rate.
+
+On the Jetson the answer turned out to be none of the obvious candidates. Measured
+2026-07-27, each part in isolation:
+
+| Component | Rate |
+|---|---|
+| Camera alone (848×480, USB 2.0) | 27 Hz |
+| Depth node compute ceiling | 32 fps (31.5 ms/frame) |
+| TRT inference alone | ~47 fps (21.3 ms) |
+| **Pipeline, all five processes** | **7–10 Hz** |
+| **Pipeline, composed (fresh map, clocks pinned)** | **27.7 Hz** |
+
+Every part was fast. The assembly was slow. The whole gap was inter-process message
+transport — see *"What a topic actually costs"* in section 8. Composing the SLAM nodes
+into one process took it to **20.9 Hz** without touching the model, the engine, or the
+camera — and 27.7 Hz once the clocks were pinned and the socket buffers raised.
+
+Two things worth stealing from this:
+
+1. **Profile the parts before optimizing the whole.** Had we started by trying to speed
+   up the depth network — quantizing to INT8, shrinking the input — we'd have spent days
+   attacking a component that was never the constraint.
+2. **Inference time is not the same as the benchmark.** Phase 0 measured 14.16 ms for
+   the engine on an idle Jetson. In situ, with the rest of the pipeline competing for
+   CPU and the governor set to `schedutil` rather than pinned clocks, the same engine
+   measures 21.3 ms. Benchmarks are an upper bound, not a prediction.
 
 ### What changes in Phase 2
 

@@ -14,35 +14,55 @@ That identity is the point: 1a proves the logic, 1b is migration + two swaps.
 
 ## Node graph
 
+Three OS processes. The dashed box is a single `component_container_mt` — the nodes
+inside it talk by passing pointers, not by serializing messages onto the network stack.
+
 ```
+  process 1                      process 2
 ┌─────────────────┐  /image_raw (rgb8)        ┌──────────────────────┐
 │  camera node    │ ─────────────────────────►│  depth_anything_node │
-│ (v4l2_camera /  │  /camera_info             │   (custom)           │
-│  usb_cam)       │ ──────────────┐           │  - wraps TRT engine  │
+│ (v4l2_camera)   │  /camera_info             │   (custom, Python)   │
+│                 │ ──────────────┐           │  - wraps TRT engine  │
 └─────────────────┘               │           │  - RGB in, depth out │
                                   │           └──────────┬───────────┘
-                                  │   /depth/image (32FC1, metres)   │
-                                  │   /depth/camera_info             │
-                                  ▼                                  ▼
-                          ┌───────────────────────────────────────────────┐
-                          │  rgbd_odometry  (RTAB-Map visual odometry)      │
-                          │   RGB+depth → /odom  (Phase 2: replace w/ SPOT) │
-                          └───────────────────────┬─────────────────────────┘
-                                                  │ /odom
-                                                  ▼
-                          ┌───────────────────────────────────────────────┐
-                          │  rtabmap  (RGB-D SLAM)                          │
-                          │   RGB + depth + odom → map + loop closure       │
-                          │   out: /rtabmap/cloud_map (dense point cloud)   │
-                          └───────────────────────┬─────────────────────────┘
-                                                  │
-                                                  ▼
-                          ┌───────────────────────────────────────────────┐
-                          │  viewer (rtabmap_viz / rviz2)                   │
-                          │   shows the dense RGB point cloud               │
-                          │   (/rtabmap/cloud_map, colored by camera RGB)   │
-                          └───────────────────────────────────────────────┘
+                                  │   /depth/image (16UC1, millimetres)
+                                  ▼                      ▼
+  ╭┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈╮
+  ┊  process 3 — component_container_mt (intra-process comms)   ┊
+  ┊                                                             ┊
+  ┊    ┌───────────────────────────────────────────────┐        ┊
+  ┊    │  rgbd_sync  (rtabmap_sync::RGBDSync)          │        ┊
+  ┊    │   rgb + depth + camera_info → ONE message     │        ┊
+  ┊    └──────────────────────┬────────────────────────┘        ┊
+  ┊                           │ /rgbd_image                     ┊
+  ┊              ┌────────────┴────────────┐                    ┊
+  ┊              ▼                         ▼                    ┊
+  ┊    ┌──────────────────┐     ┌────────────────────────────┐  ┊
+  ┊    │  rgbd_odometry   │     │  rtabmap  (RGB-D SLAM)     │  ┊
+  ┊    │  → /odom         │────►│  → /cloud_map, loop closure│  ┊
+  ┊    │  (P2: SPOT odom) │/odom└────────────────────────────┘  ┊
+  ┊    └──────────────────┘                                     ┊
+  ╰┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈╯
+                                  │
+                                  ▼  (opt-in: viz:=true)
+                    ┌───────────────────────────────────────┐
+                    │  rtabmap_viz                          │
+                    │   subscribes /image_raw + /depth/image│
+                    │   NOT /rgbd_image — see below         │
+                    └───────────────────────────────────────┘
 ```
+
+**Why the container.** Measured 2026-07-27: the camera alone does 27 Hz and the depth
+node's compute ceiling is 32 fps, but the pipeline assembled from five separate
+processes ran at 7–10 Hz. The cost was serializing 1.2–1.6 MB image messages onto the
+loopback network stack once per subscriber. Composing the three SLAM nodes and
+collapsing rgb+depth+info into one `RGBDImage` took it to **20.9 Hz**.
+
+**Why the viewer is the odd one out.** `rtabmap_viz` is a GUI and cannot be composed,
+so it has to receive messages over the wire. The combined `/rgbd_image` is ~2 MB and
+will not survive that trip on default socket buffers, so the viewer subscribes to the
+smaller raw topics instead. It is opt-in (`viz:=true`) because it also renders 3D on
+the same GPU the depth network is using.
 
 ## Why each piece
 
@@ -68,16 +88,29 @@ That identity is the point: 1a proves the logic, 1b is migration + two swaps.
 
 ## Topic contract (the interfaces that matter)
 
-| Topic | Type | Produced by | Consumed by |
-|---|---|---|---|
-| `/image_raw` | sensor_msgs/Image (rgb8) | camera | depth_anything_node, rgbd_odometry, rtabmap |
-| `/camera_info` | sensor_msgs/CameraInfo | camera | depth_anything_node, rtabmap |
-| `/depth/image` | sensor_msgs/Image (32FC1, metres) | depth_anything_node | rgbd_odometry, rtabmap |
-| `/odom` | nav_msgs/Odometry | rgbd_odometry (P1) → SPOT (P2) | rtabmap |
-| `/rtabmap/cloud_map` | sensor_msgs/PointCloud2 | rtabmap | viewer |
+| Topic | Type | Size/frame | Produced by | Consumed by |
+|---|---|---|---|---|
+| `/image_raw` | sensor_msgs/Image (rgb8) | 1.22 MB | camera | depth_anything_node, rgbd_sync, rtabmap_viz |
+| `/camera_info` | sensor_msgs/CameraInfo | tiny | camera | depth_anything_node, rgbd_sync |
+| `/depth/image` | sensor_msgs/Image (16UC1, mm) | 815 KB | depth_anything_node | rgbd_sync, rtabmap_viz |
+| `/depth/camera_info` | sensor_msgs/CameraInfo | tiny | depth_anything_node | rtabmap_viz |
+| `/rgbd_image` | rtabmap_msgs/RGBDImage | ~2 MB | rgbd_sync | rgbd_odometry, rtabmap *(in-process only)* |
+| `/odom` | nav_msgs/Odometry | tiny | rgbd_odometry (P1) → SPOT (P2) | rtabmap, rtabmap_viz |
+| `/cloud_map` | sensor_msgs/PointCloud2 | grows | rtabmap | viewer |
 
-The depth must be **registered** to (aligned with) the RGB frame and in **metres**
-(32FC1). Getting that contract right is most of the depth_anything_node's job.
+The depth must be **registered** to (aligned with) the RGB frame — same resolution,
+same intrinsics. That contract is most of depth_anything_node's job.
+
+**On the depth encoding.** The wire format is `16UC1` millimetres, not `32FC1` metres:
+half the bytes on a topic that is bandwidth-bound, and it is the standard ROS depth
+encoding that every RGB-D consumer already understands. 1 mm quantization is far below
+the depth network's own error, so nothing is lost. `depth_encoding:=32FC1` switches back.
+Note this is a *wire* format — everything upstream and downstream still reasons in
+metres, per the project convention.
+
+**`/rgbd_image` does not leave the container.** It is listed here for completeness, but
+an out-of-process subscriber will not receive it reliably on default socket buffers.
+Anything outside the container must use the raw topics.
 
 ## What changes in later phases (so Phase 1 doesn't paint us into a corner)
 

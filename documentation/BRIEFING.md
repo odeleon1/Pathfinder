@@ -135,6 +135,12 @@ Differences from Jetson build, by design:
 - v4l2_camera publishes `frame_id` from YAML `camera_name`. All rtabmap nodes must use the same frame name (`camera`). Mismatch = TF lookup failure.
 - USB-C on Jetson Orin Nano is device-mode only — cameras go into USB-A.
 
+**Throughput rework (2026-07-27): 7–10 Hz → 20.9 Hz.** The as-shipped pipeline ran far below its parts: the camera alone did 27 Hz and the depth node's compute ceiling was 32 fps, but five separate processes serializing 1.2–1.6 MB image messages to three or four subscribers each cost ~9.8 MB of copying per frame. `rgbd_odometry`, `rtabmap` and a new `rtabmap_sync::RGBDSync` now run composed in one `component_container_mt` with intra-process comms; depth moved to `16UC1` millimetres (half the bytes of `32FC1`); `rtabmap_viz` became opt-in. No change to the model, the engine, or the camera.
+
+This matters beyond Phase 1b: **the plumbing, not the network, is the thing that will constrain Phase 3.** SPOT adds more subscribers and more topics to the same graph, and the same serialization cost applies to each. Budget for composition when designing the Phase 2/3 node graph rather than retrofitting it.
+
+It also surfaced a latent environment bug worth carrying forward: Ubuntu's default socket buffers (208 KB across all four `net.core.*mem_*` values) are too small for uncompressed image topics, and DDS drops the excess **silently**. It went unnoticed through all of Phase 1b because at 7–10 Hz the traffic still fit. See documentation/CLAUDE.md for the fix — and note that raising `rmem_max` alone does nothing, which is the obvious wrong turn.
+
 ### Phase 2 — SPOT integration (no mapping yet)
 Mount Jetson + camera. Bring up spot_ros2. Get SPOT body odometry + state into ROS 2. Build the TF tree (SPOT body → camera). Stand up the scale-recovery step that ties odometry to the depth output.
 **Exit:** SPOT live odometry and camera frames time-synced in one ROS graph, and relative depth getting rescaled to metric using odometry.

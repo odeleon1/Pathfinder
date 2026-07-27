@@ -165,15 +165,40 @@ Saves intrinsics to `~/.ros/camera_info/camera.yaml`.
 
 ## Running the pipeline
 
+Run the mapper and the viewer in **two terminals**.
+
+First, clear the previous map — rtabmap reloads `~/.ros/rtabmap.db` on every launch, and
+a stale one costs about 3× throughput:
+
+```bash
+rm ~/.ros/rtabmap.db
+```
+
+**Terminal 1 — the pipeline:**
+
 ```bash
 cd ~/Documents/Projects/Pathfinder
-source install/setup.bash
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
 ros2 launch depth_anything_node pipeline.launch.py \
   camera_info_url:=file:///home/$USER/.ros/camera_info/camera.yaml
 ```
 
-`rtabmap_viz` opens. Walk the camera slowly around the room — a growing colored point
-cloud appears in the viewer.
+**Terminal 2 — the viewer:**
+
+```bash
+cd ~/Documents/Projects/Pathfinder
+source /opt/ros/jazzy/setup.bash && source install/setup.bash
+ros2 run rtabmap_viz rtabmap_viz --ros-args -r __node:=viewer \
+  -p frame_id:=camera -p subscribe_depth:=false \
+  -p subscribe_rgbd:=false -p subscribe_odom:=false
+```
+
+Walk the camera slowly around the room — a growing colored point cloud appears in the
+viewer. Runs at ~27 Hz on a fresh map.
+
+> Don't use the launch file's `viz:=true`. The viewer starves when it also subscribes to
+> the image topics — see [CLAUDE.md](documentation/CLAUDE.md). The two-terminal split above
+> is the verified path.
 
 **Launch arguments** (all optional, with sensible defaults):
 
@@ -183,6 +208,8 @@ cloud appears in the viewer.
 | `camera_device` | `/dev/video0` | V4L2 device node |
 | `camera_info_url` | *(empty)* | `file://` path to calibration YAML |
 | `frame_id` | `camera` | Coordinate frame — must match the camera_info `camera_name` |
+| `viz` | `false` | Launch `rtabmap_viz` in-process — **known broken**, use terminal 2 instead |
+| `depth_encoding` | `16UC1` | Depth wire format: `16UC1` (mm) or `32FC1` (metres) |
 
 ---
 

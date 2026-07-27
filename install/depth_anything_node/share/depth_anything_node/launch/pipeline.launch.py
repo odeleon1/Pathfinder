@@ -27,26 +27,34 @@ depth_anything_node stays a separate process — rclpy has no zero-copy
 intra-process support, so it cannot benefit from the container. /image_raw out
 and /depth/image back are the only real IPC hops left.
 
-Large messages between processes (affects viz:=true)
-----------------------------------------------------
-This box drops big inter-process messages. Measured 2026-07-27 with an external
-subscriber, while in-container subscribers saw ~20 Hz of the same topic:
+Why rtabmap_viz does NOT use /rgbd_image
+----------------------------------------
+The composed nodes consume /rgbd_image, but rtabmap_viz subscribes to the raw
+rgb + depth topics instead. That asymmetry is deliberate: on this box the ~2 MB
+RGBDImage will not reach a subscriber outside the container, while the smaller
+raw topics cross fine. Measured 2026-07-27, external subscriber vs ~20 Hz seen
+by in-container subscribers of the same topic:
 
-    /odom        (small)   8 msgs / 12 s   ok
-    /depth/image (815 KB)  ~20 Hz          ok
-    /rgbd_image  (~2 MB)   2 msgs / 12 s   starved
+    /depth/image (815 KB)   ~20 Hz
+    /rgbd_image  (~2 MB)    0 msgs / 12 s
 
-Cause is net.core.rmem_max = 212992 (208 KB, the Linux default) — far too small
-for a 2 MB RGBDImage. It is also most of why the pre-container pipeline sat at
-7-10 Hz: every one of those 1.2-1.6 MB image messages was crossing a process
-boundary through that same undersized socket buffer.
+Root cause is the kernel socket buffers, but note WHICH ones — raising
+net.core.rmem_max alone does nothing, because FastDDS sizes its sockets from
+net.core.rmem_default, and the send side (wmem_*) matters just as much. All
+four need raising:
 
-The container sidesteps it for mapping (intra-process = pointer passing, never
-serialized), but rtabmap_viz is a GUI and cannot be composed. To use viz:=true:
+    sudo sysctl -w net.core.rmem_max=16777216 net.core.rmem_default=16777216 \
+                   net.core.wmem_max=16777216 net.core.wmem_default=16777216
+    # persist:
+    printf 'net.core.rmem_max=16777216\nnet.core.rmem_default=16777216\n%s\n%s\n' \
+      'net.core.wmem_max=16777216' 'net.core.wmem_default=16777216' \
+      | sudo tee /etc/sysctl.d/60-ros2.conf
 
-    sudo sysctl -w net.core.rmem_max=16777216
-    # persist it:
-    echo 'net.core.rmem_max=16777216' | sudo tee /etc/sysctl.d/60-ros2.conf
+Ruled out, do not re-try: use_intra_process_comms (disabled container-wide,
+still 0) and stale /dev/shm FastDDS segments (cleared 38, still 0).
+
+Note this also means Phase 1b's viewer only worked because the pipeline ran at
+7-10 Hz. At 20 Hz the same topics saturate the same undersized buffers.
 
 Camera calibration:
   Without a calibration file v4l2_camera publishes zeroed intrinsics and the
@@ -71,7 +79,7 @@ def generate_launch_description():
     depth_encoding  = LaunchConfiguration("depth_encoding")
     viz             = LaunchConfiguration("viz")
 
-    # Shared by every rtabmap-family node. approx_sync is required because the
+    # Shared by the composed rtabmap nodes. approx_sync is required because the
     # depth node adds latency, so depth stamps never match rgb stamps exactly.
     sync_params = {
         "frame_id":        frame_id,
@@ -114,10 +122,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "viz",
             default_value="false",
-            description="Launch rtabmap_viz. REQUIRES a UDP buffer bump first, "
-                        "see the note below, or it will starve. Mapping itself "
-                        "is unaffected — odometry and rtabmap live inside the "
-                        "container and never touch the wire.",
+            description="Launch rtabmap_viz. Also disables intra-process comms "
+                        "container-wide, because the viewer cannot see an "
+                        "intra-process topic — see the module docstring. Costs "
+                        "throughput, so leave it false while actually mapping.",
         ),
 
         # ── camera (separate process — see note) ───────────────────────────────
@@ -214,15 +222,27 @@ def generate_launch_description():
         ),
 
         # ── viewer (opt-in) ────────────────────────────────────────────────────
-        # Display is in feet (pipeline is metres; rtabmap_viz has no built-in
-        # unit switch — apply x3.28084 in the point cloud display settings).
+        # Subscribes to the RAW topics, not /rgbd_image — see the module
+        # docstring. Display is in feet (pipeline is metres; rtabmap_viz has no
+        # built-in unit switch — apply x3.28084 in the point cloud display
+        # settings).
         Node(
             package="rtabmap_viz",
             executable="rtabmap_viz",
             name="rtabmap_viz",
             output="screen",
             condition=IfCondition(viz),
-            parameters=[sync_params],
-            remappings=[("rgbd_image", "/rgbd_image")],
+            parameters=[{
+                "frame_id":        frame_id,
+                "subscribe_depth": True,
+                "approx_sync":     True,
+                "sync_queue_size": 5,
+            }],
+            remappings=[
+                ("rgb/image",         "/image_raw"),
+                ("rgb/camera_info",   "/camera_info"),
+                ("depth/image",       "/depth/image"),
+                ("depth/camera_info", "/depth/camera_info"),
+            ],
         ),
     ])

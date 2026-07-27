@@ -101,7 +101,7 @@ Everything for Phase 1b–5 lives under the project root. This is also the colco
 
 **Active phase: Phase 2 — SPOT integration.**
 
-Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_viz.
+Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_viz. Pipeline reworked 2026-07-27 for throughput: **7–10 Hz → 20.9 Hz** (see "Pipeline throughput rework" below).
 
 ### Phase 1b — ✅ DONE (Jetson TRT + live webcam)
 
@@ -133,6 +133,31 @@ Phase 1b complete on Jetson. Growing colored point cloud confirmed in rtabmap_vi
 - Control 10092545 `Permission denied` warning from v4l2_camera is non-fatal (proprietary BRIO UVC extension).
 
 **Exit criteria:** handheld walk with a live USB webcam on the Jetson produces a coherent, saveable reconstruction in rtabmap_viz. ✅ MET
+
+---
+
+### Pipeline throughput rework — 2026-07-27
+
+**7–10 Hz → 20.9 Hz.** Launch file restructured; no change to the depth model or engine.
+
+**The finding:** the bottleneck was never compute. Measured in isolation, the camera does 27 Hz and the depth node's own compute ceiling is 32 fps — but assembled, the pipeline ran at 7–10 Hz. The cost was moving 1.2–1.6 MB image messages between five separate processes, over a socket buffer far too small for them.
+
+**What changed:**
+- `rgbd_odometry` + `rtabmap` + a new `rtabmap_sync::RGBDSync` now run in one `component_container_mt` with `use_intra_process_comms`. RGBDSync collapses rgb + depth + camera_info into a single `RGBDImage` topic, and intra-process makes those hops pointer passing — never serialized.
+- `rtabmap_viz` is now opt-in (`viz:=true`, default false).
+- Depth publishes `16UC1` millimetres instead of `32FC1` metres — half the bytes, the ROS-standard depth encoding, 1 mm quantization (far below the network's own error). Switch back with `depth_encoding:=32FC1`.
+
+**Launch command is unchanged.** Add `viz:=true` to get the viewer.
+
+**Durable gotchas (throughput):**
+- **`net.core.rmem_max` is 212992 (208 KB) by default and is too small for ROS 2 image traffic.** Measured: an external subscriber got 2 `/rgbd_image` (~2 MB) messages in 12 s while in-container subscribers saw ~20 Hz of the same topic. `/depth/image` (815 KB) crossed fine. Fix before using `viz:=true`: `sudo sysctl -w net.core.rmem_max=16777216`, persist via `/etc/sysctl.d/60-ros2.conf`. Mapping itself is unaffected — odometry and rtabmap are intra-process.
+- **Do not put `v4l2_camera` in the component container.** Loading any component into a process where it is already streaming deadlocks the container forever on `Load Library: librtabmap_sync_plugins.so` — image_transport dlopens its plugins lazily as subscribers appear, racing the container's own dlopen. Happens with `component_container_mt` too. RGBDSync loads into a bare container in 2.5 s.
+- Use `component_container_mt`, never `component_container` — the single-threaded one starves the LoadNode service.
+- `cv2.multiply(depth, 1000.0, dtype=cv2.CV_16U)` is 0.85 ms vs 2.9 ms for the numpy `nan_to_num`/`clip`/`astype` chain, and saturates NaN/negative/overflow to 0 (= "no measurement") instead of 65535 (= a fake confident 65 m reading).
+- Jetson clocks are **not** pinned (`schedutil` governor). Inference measures 21.3 ms in situ vs the 14.16 ms Phase 0 benchmark. `sudo jetson_clocks` recovers most of that. This board offers only 15W/7W — no MAXN, that's the Orin Nano Super.
+- `ros2 topic hz` on large image topics under-reports badly (the Python CLI subscriber is itself the bottleneck). Use a minimal counting subscriber instead.
+
+**Still on the table if more speed is needed:** `sudo jetson_clocks` (~7 ms/frame); GPU-side preprocessing (4.8 ms/frame currently on CPU); publishing depth at the network's native 364×364 (needs `K` scaled to match — the node currently copies RGB `camera_info` verbatim, which is only correct because depth is resized back to frame resolution).
 
 ---
 
